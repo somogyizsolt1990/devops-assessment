@@ -1,0 +1,158 @@
+# Pipeline: lint -> test -> build -> plan -> deploy -> verify
+#
+# Runners
+# - lint and test run on GitLab shared runners (Docker executor, pinned images).
+# - build, plan, deploy and verify run on a self-hosted shell runner tagged "k3d",
+#   on the machine that hosts the k3d cluster. There is no registry: the image is
+#   built on that host and imported straight into the cluster, and the kubeconfig
+#   never leaves that host.
+#   Required on the host: docker, k3d, terraform, helm, curl.
+#
+# Merge requests: lint, test, build, plan. Default branch: everything, with an
+# automatic deployment to the dev environment.
+
+workflow:
+  rules:
+    # Merge request pipelines for MRs, branch pipelines otherwise; never both.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+stages:
+  - lint
+  - test
+  - build
+  - plan
+  - deploy
+  - verify
+
+variables:
+  IMAGE_NAME: myapp
+  # Unique per commit and traceable back to it; rollback = deploy an older SHA.
+  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+  K3D_CLUSTER: homework
+  TF_ROOT: terraform
+  TF_VAR_FILE: environments/dev.tfvars
+  TF_VAR_image_tag: $CI_COMMIT_SHORT_SHA
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  # GitLab-managed Terraform state, authenticated with the job token (no stored secret).
+  TF_STATE_NAME: dev
+  TF_HTTP_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}
+  TF_HTTP_LOCK_ADDRESS: ${TF_HTTP_ADDRESS}/lock
+  TF_HTTP_UNLOCK_ADDRESS: ${TF_HTTP_ADDRESS}/lock
+  TF_HTTP_LOCK_METHOD: POST
+  TF_HTTP_UNLOCK_METHOD: DELETE
+  TF_HTTP_USERNAME: gitlab-ci-token
+  TF_HTTP_PASSWORD: ${CI_JOB_TOKEN}
+
+.k3d-runner:
+  tags: [k3d]
+
+.default-branch-only:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+.terraform:
+  extends: .k3d-runner
+  before_script:
+    - cd "$TF_ROOT"
+    - terraform init
+
+# --- lint -------------------------------------------------------------------
+
+terraform:lint:
+  stage: lint
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  script:
+    - cd "$TF_ROOT"
+    - terraform fmt -check -recursive -diff
+    - terraform init -backend=false
+    - terraform validate
+
+helm:lint:
+  stage: lint
+  image:
+    name: alpine/helm:4.3.2
+    entrypoint: [""]
+  script:
+    - helm lint --strict helm/myapp
+    - helm template homework helm/myapp > /dev/null
+
+# --- test -------------------------------------------------------------------
+
+app:test:
+  stage: test
+  image: python:3.12-slim
+  variables:
+    PIP_CACHE_DIR: $CI_PROJECT_DIR/.cache/pip
+  cache:
+    key:
+      files: [app/requirements-dev.txt]
+    paths: [.cache/pip]
+  script:
+    - cd app
+    - pip install -r requirements-dev.txt
+    - pytest -q --junitxml=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: app/report.xml
+
+# --- build ------------------------------------------------------------------
+
+build:
+  stage: build
+  extends: .k3d-runner
+  script:
+    # Single source of the application version: appVersion in Chart.yaml.
+    - APP_VERSION=$(awk -F'"' '/^appVersion:/ {print $2}' helm/myapp/Chart.yaml)
+    - test -n "$APP_VERSION"
+    - docker build --build-arg APP_VERSION="$APP_VERSION" -t "$IMAGE_NAME:$IMAGE_TAG" app/
+
+# --- plan / deploy ----------------------------------------------------------
+
+terraform:plan:
+  stage: plan
+  extends: .terraform
+  script:
+    - terraform plan -var-file="$TF_VAR_FILE" -out=plan.cache
+    - terraform show -no-color plan.cache > plan.txt
+  artifacts:
+    # The plan file can contain sensitive values: keep it short-lived.
+    paths:
+      - $TF_ROOT/plan.cache
+      - $TF_ROOT/plan.txt
+    expire_in: 1 day
+
+terraform:apply:
+  stage: deploy
+  extends: [.terraform, .default-branch-only]
+  # One deployment to dev at a time, in pipeline order.
+  resource_group: dev
+  environment:
+    name: dev
+    url: http://myapp.localhost:8081
+  script:
+    # No registry: load the image straight into the cluster nodes.
+    - k3d image import "$IMAGE_NAME:$IMAGE_TAG" --cluster "$K3D_CLUSTER"
+    # Applies exactly the reviewed plan; atomic in the release rolls back on failure.
+    - terraform apply plan.cache
+    - terraform output
+
+# --- verify -----------------------------------------------------------------
+
+verify:
+  stage: verify
+  extends: [.terraform, .default-branch-only]
+  script:
+    - NAMESPACE=$(terraform output -raw namespace)
+    - RELEASE=$(terraform output -raw release_name)
+    - KUBE_CONTEXT=$(awk -F'"' '/^kube_context/ {print $2}' "$TF_VAR_FILE")
+    # The release must run the image built by this pipeline.
+    - test "$(terraform output -raw image_tag)" = "$IMAGE_TAG"
+    - helm test "$RELEASE" --namespace "$NAMESPACE" --kube-context "$KUBE_CONTEXT" --logs
+    - curl -fsS --retry 5 --retry-connrefused http://myapp.localhost:8081/health

@@ -1,0 +1,8 @@
+apiVersion: v2
+name: myapp
+description: Small config service (DevOps homework)
+type: application
+# Chart version: bump on every chart change.
+version: 0.2.0
+# Application version: default image tag and the app.kubernetes.io/version label.
+appVersion: "1.0.0"

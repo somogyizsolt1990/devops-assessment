@@ -1,0 +1,13 @@
+{{ include "myapp.fullname" . }} ({{ include "myapp.imageTag" . }}) is deployed to namespace {{ .Release.Namespace }}.
+{{- if .Values.ingress.enabled }}
+
+Via Ingress (add the ingress controller's host port if it is not 80, e.g. :8081 on k3d):
+  curl http://{{ .Values.ingress.host }}/health
+{{- end }}
+
+Via port-forward:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "myapp.fullname" . }} 8082:{{ .Values.service.port }}
+  curl http://localhost:8082/health
+
+Smoke test:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}

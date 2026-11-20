@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+# Local-only overrides (e.g. a local backend) and CI plan artifacts
+override.tf
+*_override.tf
+plan.cache
+plan.txt
+
+# CI artifacts and caches
+app/report.xml
+.cache/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

@@ -1,0 +1,48 @@
+# Config is stored in process memory: with more than one replica every pod
+# would hold its own, diverging state. Keep this at 1 (see README).
+replicaCount: 1
+
+image:
+  repository: myapp
+  # Empty: falls back to .Chart.AppVersion. CI overrides it with --set image.tag=...
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Value of the ENVIRONMENT variable inside the container.
+environment: dev
+
+# Must match the port the image listens on (Dockerfile CMD).
+containerPort: 8080
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  # Empty: the cluster's default IngressClass is used (k3d: traefik).
+  className: ""
+  # *.localhost resolves to 127.0.0.1 without an /etc/hosts entry.
+  host: myapp.localhost
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    # No CPU limit on purpose: it throttles the pod even when the node has idle CPU.
+    memory: 128Mi
+
+# Matches the "restricted" Pod Security Standard; UID/GID come from the Dockerfile.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
