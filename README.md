@@ -241,6 +241,7 @@ The use of AI-assisted tools is permitted. However, we encourage you to complete
 | `helm/myapp/` | Helm chart |
 | `terraform/` | Namespace and Helm release; `environments/dev.tfvars` for the local cluster |
 | `.gitlab-ci.yml` | Pipeline: lint → test → build → plan → deploy → verify |
+| `REVIEW.md` | Code review of the original skeleton for the junior colleague (Goal 2) |
 
 ### Prerequisites
 
